@@ -1,23 +1,16 @@
 import * as Cesium from 'cesium'
 import { color } from './styleDemoPalette'
 
-/**
- * Visual-only scene preset. Nothing in this function is used by the production MVP.
- */
 export function applyStyleDemoSceneLook(viewer: Cesium.Viewer, basemapLayer?: Cesium.ImageryLayer | null) {
   viewer.scene.highDynamicRange = true
-  viewer.scene.logarithmicDepthBuffer = false
-  viewer.camera.frustum.near = 10
-  viewer.scene.postProcessStages.exposure = 1.05
-
+  viewer.camera.frustum.near = 100
+  viewer.camera.frustum.far = 50000
   viewer.scene.backgroundColor = color('ground')
+  // Globe imagery is composited outside the model PBR path; compensate its
+  // brighter display response without changing exposure or the MVP palette.
   viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#75858D')
   viewer.scene.globe.enableLighting = false
   viewer.scene.globe.showGroundAtmosphere = false
-  viewer.scene.globe.depthTestAgainstTerrain = false
-
-  if (viewer.scene.skyBox) viewer.scene.skyBox.show = false
-  if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false
 
   viewer.scene.fog.enabled = true
   viewer.scene.fog.density = 0.000055
@@ -31,9 +24,9 @@ export function applyStyleDemoSceneLook(viewer: Cesium.Viewer, basemapLayer?: Ce
     basemapLayer.gamma = 1.05
   }
 
-  // SSAO produced geographic-depth speckling in the current browser scene.
-  // Keep baked/material AO and soft cast shadows instead.
   const ao = viewer.scene.postProcessStages.ambientOcclusion
+  // The real browser shows facade speckling with SSAO at geographic depth
+  // ranges. Keep embedded material AO and soft cast shadows instead.
   ao.enabled = false
   if (ao.uniforms) {
     ao.uniforms.intensity = 1.3
@@ -43,25 +36,12 @@ export function applyStyleDemoSceneLook(viewer: Cesium.Viewer, basemapLayer?: Ce
     ao.uniforms.blurStepSize = 0.85
   }
 
-  viewer.scene.postProcessStages.fxaa.enabled = true
   viewer.scene.postProcessStages.bloom.enabled = false
-  viewer.shadowMap.softShadows = true
-  viewer.shadowMap.size = 2048
-  viewer.shadowMap.darkness = 0.22
-  viewer.clock.currentTime = Cesium.JulianDate.fromIso8601('2026-06-01T04:00:00Z')
 
-  const localFrame = Cesium.Transforms.eastNorthUpToFixedFrame(
-    Cesium.Cartesian3.fromDegrees(121.49, 31.24),
-  )
+  const localFrame = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(121.49, 31.24))
   viewer.scene.light = new Cesium.DirectionalLight({
-    direction: Cesium.Cartesian3.normalize(
-      Cesium.Matrix4.multiplyByPointAsVector(
-        localFrame,
-        new Cesium.Cartesian3(0.4, -0.6, -0.7),
-        new Cesium.Cartesian3(),
-      ),
-      new Cesium.Cartesian3(),
-    ),
+    direction: Cesium.Cartesian3.normalize(Cesium.Matrix4.multiplyByPointAsVector(localFrame,
+      new Cesium.Cartesian3(0.4, -0.6, -0.7), new Cesium.Cartesian3()), new Cesium.Cartesian3()),
     intensity: 1.15,
   })
 }

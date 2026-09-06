@@ -1,9 +1,6 @@
 import * as Cesium from 'cesium'
-import { LUJIAZUI_ASSET_VERSION } from './lujiazuiAssetVersion'
 
-const LUJIAZUI_GLB_BASE_URL = import.meta.env.VITE_LUJIAZUI_GLB_URL?.trim() || '/runtime/lujiazui-camera-max/lujiazui.glb'
-const LUJIAZUI_GLB_CACHE_VERSION = import.meta.env.VITE_LUJIAZUI_GLB_VERSION?.trim() || LUJIAZUI_ASSET_VERSION
-export const LUJIAZUI_GLB_URL = `${LUJIAZUI_GLB_BASE_URL}${LUJIAZUI_GLB_BASE_URL.includes('?') ? '&' : '?'}v=${encodeURIComponent(LUJIAZUI_GLB_CACHE_VERSION)}`
+export const LUJIAZUI_GLB_URL = '/runtime/lujiazui-camera-max/lujiazui.glb?v=astra-context'
 export const LUJIAZUI_ANCHOR = { lon: 121.5014, lat: 31.2357 }
 export const LUJIAZUI_LOCAL_BOUNDS = {
   centerX: 93665,

@@ -9,9 +9,8 @@ import { loadMajorRoadLayer, MAJOR_ROADS_GEOJSON_URL, MAJOR_ROADS_SOURCE_LABEL }
 import { addGeographicSensorEntity } from './scene/sensorEntity'
 import { applyOsmContextVisuals } from './scene/osmContextFacadeShader'
 import { getShanghaiSceneMode } from './scene/styleDemoMode'
-import { applyMvpSceneLook } from './scene/mvpSceneLook'
 import { applyStyleDemoSceneLook } from './scene/styleDemoSceneLook'
-import { applyBuildingSurfaceV4 } from './scene/buildingSurfaceV4'
+import { applyBuildingSurfaceV3 } from './scene/buildingSurfaceV3'
 import { loadShanghaiLanduseLayer } from './scene/landuseLayer'
 import {
   LUJIAZUI_ANCHOR,
@@ -336,7 +335,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       : undefined
 
     const viewer = new Cesium.Viewer(containerRef.current, {
-      shadows: visualDemo,
+      shadows: true,
       animation: false,
       baseLayer: false,
       baseLayerPicker: false,
@@ -352,15 +351,42 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     const cityLayer = new Cesium.PrimitiveCollection()
     viewer.scene.primitives.add(cityLayer)
     cityLayerRef.current = cityLayer
+    viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#54626b')
+    if (viewer.scene.skyBox) viewer.scene.skyBox.show = false
+    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false
+    viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#7c8588')
+    viewer.scene.highDynamicRange = true
+    // Log depth causes coplanar facade striping on this centimetre-scale source.
+    viewer.scene.logarithmicDepthBuffer = false
+    viewer.camera.frustum.near = 10
+    viewer.scene.postProcessStages.exposure = 1.05
+    // Embedded material AO is retained. Screen-space AO creates terrain banding
+    // at this geographic scale, so it must not be stacked over the baked AO.
+    viewer.scene.postProcessStages.ambientOcclusion.enabled = false
+    viewer.scene.postProcessStages.fxaa.enabled = true
+    viewer.shadowMap.softShadows = true
+    viewer.shadowMap.size = 2048
+    viewer.shadowMap.darkness = 0.22
+    viewer.clock.currentTime = Cesium.JulianDate.fromIso8601('2026-06-01T04:00:00Z')
     const basemapProvider = new Cesium.OpenStreetMapImageryProvider({
       url: OSM_BASEMAP_URL,
       maximumLevel: 19,
     })
     const basemapLayer = viewer.imageryLayers.addImageryProvider(basemapProvider, 0)
+    basemapLayer.alpha = 0.08
+    basemapLayer.brightness = 0.9
+    basemapLayer.contrast = 0.65
+    basemapLayer.saturation = 0.0
     basemapLayer.show = layers.base
     basemapLayerRef.current = basemapLayer
+    viewer.scene.globe.enableLighting = false
+    viewer.scene.globe.showGroundAtmosphere = false
+    // The source site sits slightly below terrain; draw it without changing its datum.
+    viewer.scene.globe.depthTestAgainstTerrain = false
+    viewer.scene.fog.enabled = true
+    viewer.scene.fog.density = 0.00008
+    viewer.scene.fog.screenSpaceErrorFactor = 2
     if (visualDemo) applyStyleDemoSceneLook(viewer, basemapLayer)
-    else applyMvpSceneLook(viewer, basemapLayer, WORLD_TERRAIN_ENABLED)
     viewerRef.current = viewer
     setViewerReady(true)
 
@@ -375,7 +401,6 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
         }
         placeHuangpuByRange(tileset)
         tuneContextTileset(tileset, inset)
-        if (visualDemo) applyBuildingSurfaceV4(tileset)
         cityLayer.add(tileset)
         contextTilesetRef.current = tileset
         setContextSource('local')
@@ -519,7 +544,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
           return
         }
         tuneContextTileset(tileset, inset, true)
-        if (visualDemo) applyBuildingSurfaceV4(tileset)
+        if (visualDemo) applyBuildingSurfaceV3(tileset)
         if (visualDemo) {
           tileset.allTilesLoaded.addEventListener(() => { if (!disposed) setContextLoaded(true) })
           tileset.loadProgress.addEventListener((pending, processing) => {
@@ -962,7 +987,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       data-scene-mode={sceneMode}
       data-landuse-status={landuseStatus}
       data-landuse-count={landuseCount}
-      data-context-surface={visualDemo ? 'building-surface-v4' : 'existing'}
+      data-context-surface={visualDemo ? 'building-surface-v3' : 'existing'}
       data-context-loaded={visualDemo ? contextLoaded : undefined}
       ref={containerRef}
       aria-label="上海 Cesium 三维城市底座"
@@ -978,7 +1003,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       data-river-clip-count={riverClipCount}
       data-local-tileset={CORE_TILES_URL}
       data-coordinate-system="WGS84 lon/lat"
-      data-ground-source={visualDemo ? 'osm-online-style-demo' : 'osm-online-mvp'}
+      data-ground-source="osm-online-dimmed"
       data-hydro-source={SHANGHAI_WATER_POLYGONS_GEOJSON_URL}
       data-hydro-waterways-source={SHANGHAI_WATERWAYS_GEOJSON_URL}
       data-hydro-attribution={SHANGHAI_WATER_SOURCE_LABEL}

@@ -7,9 +7,19 @@ import { addDemoCityBlocks } from './scene/demoCityLayer'
 import { SHANGHAI_WATER_POLYGONS_GEOJSON_URL, SHANGHAI_WATER_SOURCE_LABEL, SHANGHAI_WATERWAYS_GEOJSON_URL, loadShanghaiHydroSystemLayer } from './scene/hydroSystemLayer'
 import { loadMajorRoadLayer, MAJOR_ROADS_GEOJSON_URL, MAJOR_ROADS_SOURCE_LABEL } from './scene/majorRoadLayer'
 import { addGeographicSensorEntity } from './scene/sensorEntity'
+import {
+  LUJIAZUI_ANCHOR,
+  LUJIAZUI_CONTROL_POINTS,
+  LUJIAZUI_GLB_URL,
+  addLujiazuiCalibrationMarkers,
+  getInitialLujiazuiModelMatrix,
+  getLujiazuiCalibrationMode,
+  saveLujiazuiModelMatrix,
+  solveLujiazuiSimilarityCorrection,
+  type LujiazuiGeoreferenceStatus,
+} from './scene/lujiazuiModel'
 
 const CORE_TILES_URL = '/data/runtime/shanghai-core/tileset.json'
-const LUJIAZUI_GLB_URL = '/runtime/lujiazui-camera-max/lujiazui.glb'
 const OSM_BASEMAP_URL = 'https://tile.openstreetmap.org/'
 const CESIUM_ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN?.trim()
 const WORLD_TERRAIN_ENABLED = Boolean(CESIUM_ION_TOKEN)
@@ -20,19 +30,10 @@ const BIMANGLE_ORIGIN = { lon: 116.46, lat: 39.92 }
 const HUANGPU_SHP_CENTER = { lon: 121.47797014, lat: 31.21940076 }
 const HUANGPU_MODEL_CENTER_LOCAL = { x: 80.3409, y: -53.0326, z: 90 }
 const DEFAULT_EVENT = { lon: 121.4874, lat: 31.2297 }
-// The purchased camera asset has no WGS84 control points. This visual anchor
-// uses the tallest source building as an approximate Shanghai Tower proxy.
-const LUJIAZUI_ANCHOR = { lon: 121.5014, lat: 31.2357 }
-const LUJIAZUI_LOCAL_BOUNDS = {
-  centerX: 93665,
-  baseY: 267.0371,
-  centerZ: 142626,
-  scale: 0.01,
-  heading: 0,
-}
 const LUJIAZUI_CLEANUP_NODE_NAMES = ['Sphere01', 'Plane01']
+const LUJIAZUI_CALIBRATION_MODE = getLujiazuiCalibrationMode()
 const OSM_BUILDING_STYLE = new Cesium.Cesium3DTileStyle({ color: "color('#c8c2b8', 0.94)" })
-const LUJIAZUI_MATERIAL_SHADER = new Cesium.CustomShader({
+const LUJIAZUI_UNTEXTURED_FALLBACK_SHADER = new Cesium.CustomShader({
   lightingModel: Cesium.LightingModel.PBR,
   fragmentShaderText: `
     void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
@@ -62,6 +63,8 @@ type SourceReason =
   | 'local_core_unavailable'
   | 'token_missing+local_core_unavailable'
   | 'osm_init_failed+local_core_unavailable'
+
+type LujiazuiMaterialStatus = 'unknown' | 'source-pbr' | 'procedural-fallback'
 
 function getLocalFailureReason(attemptReason: SourceAttemptReason): SourceReason {
   if (attemptReason === 'token_missing') return 'token_missing+local_core_unavailable'
@@ -135,29 +138,6 @@ function flyToTarget(viewer: Cesium.Viewer, target: { lon: number; lat: number }
   )
 }
 
-function createLujiazuiModelMatrix() {
-  const anchorFrame = Cesium.Transforms.eastNorthUpToFixedFrame(
-    Cesium.Cartesian3.fromDegrees(LUJIAZUI_ANCHOR.lon, LUJIAZUI_ANCHOR.lat, 0),
-  )
-  const modelAxes = Cesium.Matrix3.fromArray([
-    1, 0, 0,
-    0, 0, 1,
-    0, -1, 0,
-  ])
-  const headingRotation = Cesium.Matrix3.fromRotationZ(Cesium.Math.toRadians(LUJIAZUI_LOCAL_BOUNDS.heading))
-  const enuFromModel = Cesium.Matrix3.multiply(headingRotation, modelAxes, new Cesium.Matrix3())
-  const enuFromModelFrame = Cesium.Matrix4.fromRotationTranslation(enuFromModel, Cesium.Cartesian3.ZERO)
-  const localScale = Cesium.Matrix4.fromUniformScale(LUJIAZUI_LOCAL_BOUNDS.scale)
-  const localCenter = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.fromElements(
-    -LUJIAZUI_LOCAL_BOUNDS.centerX,
-    -LUJIAZUI_LOCAL_BOUNDS.baseY,
-    -LUJIAZUI_LOCAL_BOUNDS.centerZ,
-  ))
-  const scaledLocal = Cesium.Matrix4.multiply(localScale, localCenter, new Cesium.Matrix4())
-  const geographicLocal = Cesium.Matrix4.multiply(enuFromModelFrame, scaledLocal, new Cesium.Matrix4())
-  return Cesium.Matrix4.multiply(anchorFrame, geographicLocal, new Cesium.Matrix4())
-}
-
 async function waitForModelReady(model: Cesium.Model) {
   if (model.ready) return
   await new Promise<void>((resolve, reject) => {
@@ -182,7 +162,7 @@ function applyLujiazuiLighting(viewer: Cesium.Viewer, model: Cesium.Model) {
   )
   const enuToFixed = Cesium.Matrix4.getMatrix3(anchorFrame, new Cesium.Matrix3())
   const lightFromSurfaceEnu = Cesium.Cartesian3.normalize(
-    new Cesium.Cartesian3(-0.35, -0.25, 0.9),
+    new Cesium.Cartesian3(-0.42, -0.28, 0.86),
     new Cesium.Cartesian3(),
   )
   const lightFromSurfaceFixed = Cesium.Matrix3.multiplyByVector(
@@ -190,28 +170,51 @@ function applyLujiazuiLighting(viewer: Cesium.Viewer, model: Cesium.Model) {
     lightFromSurfaceEnu,
     new Cesium.Cartesian3(),
   )
+
+  viewer.scene.highDynamicRange = viewer.scene.highDynamicRangeSupported
+  viewer.scene.postProcessStages.exposure = 0.92
+  viewer.scene.atmosphere.dynamicLighting = Cesium.DynamicAtmosphereLightingType.SCENE_LIGHT
+  viewer.scene.atmosphere.hueShift = 0.02
+  viewer.scene.atmosphere.saturationShift = -0.28
+  viewer.scene.atmosphere.brightnessShift = -0.1
   viewer.scene.skyAtmosphere = new Cesium.SkyAtmosphere()
-  viewer.scene.skyAtmosphere.hueShift = 0.58
-  viewer.scene.skyAtmosphere.saturationShift = -0.18
+  viewer.scene.skyAtmosphere.hueShift = 0.02
+  viewer.scene.skyAtmosphere.saturationShift = -0.26
   viewer.scene.skyAtmosphere.brightnessShift = -0.12
   viewer.scene.light = new Cesium.DirectionalLight({
     direction: Cesium.Cartesian3.negate(lightFromSurfaceFixed, new Cesium.Cartesian3()),
-    color: Cesium.Color.fromCssColorString('#dbeeff'),
-    intensity: 1.35,
+    color: Cesium.Color.fromCssColorString('#e3ebee'),
+    intensity: 1.05,
   })
   viewer.scene.shadowMap.enabled = true
   viewer.scene.shadowMap.softShadows = true
-  viewer.scene.shadowMap.darkness = 0.62
-  viewer.scene.shadowMap.maximumDistance = 6000
-  viewer.scene.postProcessStages.ambientOcclusion.enabled = false
-  viewer.scene.postProcessStages.bloom.enabled = true
-  viewer.scene.postProcessStages.bloom.uniforms.brightness = -0.18
-  viewer.scene.postProcessStages.bloom.uniforms.contrast = 100.0
-  viewer.scene.postProcessStages.bloom.uniforms.sigma = 2.0
-  viewer.scene.postProcessStages.bloom.uniforms.stepSize = 1.0
-  model.imageBasedLighting.imageBasedLightingFactor = new Cesium.Cartesian2(0.82, 0.62)
-  model.lightColor = new Cesium.Cartesian3(1.0, 0.95, 0.9)
+  viewer.scene.shadowMap.darkness = 0.48
+  viewer.scene.shadowMap.maximumDistance = 6500
+
+  const ambientOcclusion = viewer.scene.postProcessStages.ambientOcclusion
+  ambientOcclusion.enabled = true
+  ambientOcclusion.uniforms.intensity = 2.25
+  ambientOcclusion.uniforms.bias = 0.08
+  ambientOcclusion.uniforms.lengthCap = 0.55
+  ambientOcclusion.uniforms.stepSize = 1.55
+  ambientOcclusion.uniforms.frustumLength = 5000
+
+  const bloom = viewer.scene.postProcessStages.bloom
+  bloom.enabled = true
+  bloom.uniforms.brightness = -0.32
+  bloom.uniforms.contrast = 82.0
+  bloom.uniforms.sigma = 2.0
+  bloom.uniforms.stepSize = 1.0
+
+  model.imageBasedLighting.imageBasedLightingFactor = new Cesium.Cartesian2(0.92, 1.0)
   model.shadows = Cesium.ShadowMode.ENABLED
+  const environment = model.environmentMapManager
+  environment.enabled = true
+  environment.atmosphereScatteringIntensity = 2.4
+  environment.brightness = 0.92
+  environment.saturation = 0.72
+  environment.groundColor = Cesium.Color.fromCssColorString('#4a5355')
+  environment.groundAlbedo = 0.2
 }
 
 function cleanupLujiazuiModel(model: Cesium.Model) {
@@ -236,10 +239,19 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
   const labelDataSourceRef = useRef<Cesium.CustomDataSource | null>(null)
   const forecastDataSourceRef = useRef<Cesium.GeoJsonDataSource | null>(null)
   const modelRef = useRef<Cesium.Model | null>(null)
+  const calibrationPicksRef = useRef<Cesium.Cartesian3[]>([])
+  const calibrationMarkerRefs = useRef<Cesium.Entity[]>([])
   const layersDepthRef = useRef(layers.depth)
   const [viewerReady, setViewerReady] = useState(false)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [source, setSource] = useState<'lujiazui' | 'osm' | 'local' | 'demo' | null>(null)
+  const [georeferenceStatus, setGeoreferenceStatus] = useState<LujiazuiGeoreferenceStatus>('approximate')
+  const [lujiazuiMaterialStatus, setLujiazuiMaterialStatus] = useState<LujiazuiMaterialStatus>('unknown')
+  const [calibrationMessage, setCalibrationMessage] = useState(
+    LUJIAZUI_CALIBRATION_MODE === 'capture'
+      ? `校准 1/${LUJIAZUI_CONTROL_POINTS.length}：点击模型中的 ${LUJIAZUI_CONTROL_POINTS[0].name} 建筑中心`
+      : '',
+  )
   const [sourceReason, setSourceReason] = useState<SourceReason>('none')
   const [hydroStatus, setHydroStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [roadStatus, setRoadStatus] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -340,16 +352,31 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     const loadLujiazuiModel = async () => {
       let model: Cesium.Model | undefined
       let modelAdded = false
+      let gltfImageCount = 0
       try {
+        const initialPlacement = getInitialLujiazuiModelMatrix()
+        setGeoreferenceStatus(initialPlacement.status)
         model = await Cesium.Model.fromGltfAsync({
           url: LUJIAZUI_GLB_URL,
           scene: viewer.scene,
-          modelMatrix: createLujiazuiModelMatrix(),
+          modelMatrix: initialPlacement.matrix,
           upAxis: Cesium.Axis.Z,
           forwardAxis: Cesium.Axis.X,
-          customShader: LUJIAZUI_MATERIAL_SHADER,
           shadows: Cesium.ShadowMode.ENABLED,
           backFaceCulling: false,
+          gltfCallback: (gltf) => {
+            gltfImageCount = Array.isArray(gltf.images) ? gltf.images.length : 0
+          },
+          environmentMapOptions: {
+            enabled: true,
+            maximumPositionEpsilon: 600,
+            maximumSecondsDifference: 1800,
+            atmosphereScatteringIntensity: 2.4,
+            brightness: 0.92,
+            saturation: 0.72,
+            groundColor: Cesium.Color.fromCssColorString('#4a5355'),
+            groundAlbedo: 0.2,
+          },
           id: 'lujiazui-camera-max-glb',
         })
         if (disposed) {
@@ -361,12 +388,21 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
         modelRef.current = model
         await waitForModelReady(model)
         const hiddenNodes = cleanupLujiazuiModel(model)
-        applyLujiazuiLighting(viewer, model)
+        if (gltfImageCount === 0) {
+          model.customShader = LUJIAZUI_UNTEXTURED_FALLBACK_SHADER
+          setLujiazuiMaterialStatus('procedural-fallback')
+        } else {
+          setLujiazuiMaterialStatus('source-pbr')
+          applyLujiazuiLighting(viewer, model)
+        }
+        if (LUJIAZUI_CALIBRATION_MODE === 'capture') {
+          calibrationMarkerRefs.current = addLujiazuiCalibrationMarkers(viewer)
+        }
         setSource('lujiazui')
         setSourceReason('none')
         setStatus('ready')
         flyToTarget(viewer, LUJIAZUI_ANCHOR, 1)
-        console.info(`[CesiumScene] source=lujiazui-glb anchor=陆家嘴东岸 scale=${LUJIAZUI_LOCAL_BOUNDS.scale} material=procedural-blue-gray textures=missing cleanup=${hiddenNodes}`)
+        console.info(`[CesiumScene] source=lujiazui-glb georef=${initialPlacement.status} material=gltf-pbr cleanup=${hiddenNodes}`)
         return true
       } catch (error) {
         if (modelAdded && model) cityLayer.remove(model)
@@ -415,6 +451,8 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       basemapLayerRef.current = null
       hydroDataSourceRef.current = []
       forecastDataSourceRef.current = null
+      calibrationPicksRef.current = []
+      calibrationMarkerRefs.current = []
       modelRef.current = null
       viewerRef.current = null
       setViewerReady(false)
@@ -425,7 +463,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer || !viewerReady) return
-    flyToTarget(viewer, source === 'lujiazui' ? LUJIAZUI_ANCHOR : target)
+    flyToTarget(viewer, target)
   }, [target.lat, target.lon, viewerReady, source])
 
   useEffect(() => {
@@ -655,7 +693,46 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     if (!viewer || !viewerReady) return
 
     const handleClick = (movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
-      const picked = viewer.scene.pick(movement.position)
+      const picked = viewer.scene.pick(movement.position) as { id?: unknown; primitive?: unknown } | undefined
+
+      if (LUJIAZUI_CALIBRATION_MODE === 'capture' && source === 'lujiazui' && modelRef.current) {
+        if ((picked?.primitive === modelRef.current || picked?.id === 'lujiazui-camera-max-glb') && viewer.scene.pickPositionSupported) {
+          const world = viewer.scene.pickPosition(movement.position)
+          if (world) {
+            const picks = calibrationPicksRef.current
+            picks.push(Cesium.Cartesian3.clone(world))
+            if (picks.length < LUJIAZUI_CONTROL_POINTS.length) {
+              const next = LUJIAZUI_CONTROL_POINTS[picks.length]
+              setCalibrationMessage(`校准 ${picks.length + 1}/${LUJIAZUI_CONTROL_POINTS.length}：点击模型中的 ${next.name} 建筑中心`)
+            } else {
+              try {
+                const result = solveLujiazuiSimilarityCorrection(picks)
+                const corrected = Cesium.Matrix4.multiply(
+                  result.matrix,
+                  modelRef.current.modelMatrix,
+                  new Cesium.Matrix4(),
+                )
+                modelRef.current.modelMatrix = corrected
+                saveLujiazuiModelMatrix(corrected)
+                setGeoreferenceStatus('calibrated')
+                setCalibrationMessage(`校准完成 · RMS ${result.rmsResidualM.toFixed(1)} m · 旋转 ${result.headingCorrectionDeg.toFixed(2)}° · 比例 ×${result.scaleCorrection.toFixed(4)} · 已保存`)
+                console.info('[CesiumScene] lujiazui-calibration', {
+                  rmsResidualM: result.rmsResidualM,
+                  headingCorrectionDeg: result.headingCorrectionDeg,
+                  scaleCorrection: result.scaleCorrection,
+                  modelMatrix: Cesium.Matrix4.toArray(corrected),
+                })
+              } catch (error) {
+                setCalibrationMessage(`校准失败：${error instanceof Error ? error.message : String(error)}。刷新后重试。`)
+              } finally {
+                calibrationPicksRef.current = []
+              }
+            }
+            return
+          }
+        }
+      }
+
       const entity = picked && picked.id instanceof Cesium.Entity ? picked.id : null
       const properties = entity?.properties?.getValue(Cesium.JulianDate.now())
       if (typeof properties?.floodPointId === 'string') onPointSelect(properties.floodPointId)
@@ -665,7 +742,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     return () => {
       if (!viewer.isDestroyed()) viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK)
     }
-  }, [onPointSelect, viewerReady])
+  }, [onPointSelect, source, viewerReady])
 
   useEffect(() => {
     const viewer = viewerRef.current
@@ -737,8 +814,8 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       data-source={source ?? 'loading'}
       data-source-reason={sourceReason}
       data-model-source={source === 'lujiazui' ? LUJIAZUI_GLB_URL : 'none'}
-      data-model-material={source === 'lujiazui' ? 'procedural-blue-gray-preview' : 'none'}
-      data-model-georeference={source === 'lujiazui' ? 'approximate-wgs84-anchor' : 'none'}
+      data-model-material={source === 'lujiazui' ? lujiazuiMaterialStatus : 'none'}
+      data-model-georeference={source === 'lujiazui' ? georeferenceStatus : 'none'}
       data-model-anchor={source === 'lujiazui' ? `${LUJIAZUI_ANCHOR.lon},${LUJIAZUI_ANCHOR.lat}` : 'none'}
       data-local-tileset={CORE_TILES_URL}
       data-coordinate-system="WGS84 lon/lat"
@@ -766,7 +843,32 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     >
       {status === 'loading' && <span className="cesium-scene-status">{CESIUM_ION_TOKEN ? 'LOCAL GLB / OSM BUILDINGS LOADING' : 'LOCAL CITY MODEL LOADING'}</span>}
       {status === 'error' && <span className="cesium-scene-status cesium-scene-status--error">CITY DATA UNAVAILABLE</span>}
-      {status === 'ready' && source && <span className="cesium-scene-source">{source === 'lujiazui' ? 'LUJIAZUI GLB · APPROXIMATE WGS84 ANCHOR · TEXTURES MISSING' : source === 'osm' ? 'OSM BUILDINGS · OSM ONLINE BASEMAP' : source === 'local' ? `LOCAL HUANGPU · OSM ONLINE BASEMAP${sourceReasonSuffix}` : `DEMO CITY BLOCKS · OSM ONLINE BASEMAP${sourceReasonSuffix}`}</span>}
+      {status === 'ready' && source && <span className="cesium-scene-source">{source === 'lujiazui' ? `LUJIAZUI GLB · ${georeferenceStatus === 'calibrated' ? 'CALIBRATED WGS84' : 'APPROXIMATE WGS84'} · ${lujiazuiMaterialStatus === 'source-pbr' ? 'SOURCE PBR' : lujiazuiMaterialStatus === 'procedural-fallback' ? 'PROCEDURAL FALLBACK · TEXTURES MISSING' : 'MATERIAL CHECKING'}` : source === 'osm' ? 'OSM BUILDINGS · OSM ONLINE BASEMAP' : source === 'local' ? `LOCAL HUANGPU · OSM ONLINE BASEMAP${sourceReasonSuffix}` : `DEMO CITY BLOCKS · OSM ONLINE BASEMAP${sourceReasonSuffix}`}</span>}
+      {LUJIAZUI_CALIBRATION_MODE === 'capture' && source === 'lujiazui' && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute',
+            top: 14,
+            right: 14,
+            zIndex: 8,
+            maxWidth: 420,
+            padding: '10px 12px',
+            border: '1px solid rgba(255,154,61,0.65)',
+            borderRadius: 8,
+            background: 'rgba(7,20,29,0.9)',
+            color: '#f4f7f8',
+            fontSize: 12,
+            lineHeight: 1.5,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.28)',
+            pointerEvents: 'none',
+          }}
+        >
+          <strong style={{ color: '#ffad5b' }}>陆家嘴 WGS84 快速校准</strong><br />
+          {calibrationMessage}<br />
+          <span style={{ color: '#9db0ba' }}>目标点为橙色编号。若要重置：?lujiazuiCalibrate=reset</span>
+        </div>
+      )}
       <a className="cesium-scene-attribution" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Water data © OpenStreetMap contributors · ODbL</a>
     </div>
   )

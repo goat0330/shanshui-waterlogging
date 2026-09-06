@@ -3822,3 +3822,5 @@ a {
 .cesium-scene-mount[data-scene-mode="visual"] { inset: 0; }
 .style-demo-caption { position: absolute; z-index: 10; bottom: 45px; left: 22px; color: #dce4e8; background: #263b49cc; padding: 8px 12px; font-size: 12px; pointer-events: none; }
 [data-scene-mode="visual"] .scene-camera-presets { padding: 8px; background: #263b49dd; border-radius: 5px; }
+.scene-mode-link { display: inline-flex; align-items: center; min-height: 28px; padding: 0 9px; border: 1px solid rgba(117, 211, 222, 0.55); border-radius: 4px; background: rgba(24, 75, 91, 0.82); color: #d9f6f7; font-size: 12px; text-decoration: none; }
+.scene-mode-link:hover, .scene-mode-link:focus-visible { border-color: #8cebf0; background: rgba(35, 103, 121, 0.94); color: #fff; outline: none; }

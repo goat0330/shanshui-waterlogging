@@ -1029,7 +1029,9 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
         <button onClick={() => setCameraPreset('astra-aerial-45')}>Astra aerial_45</button>
         <button onClick={() => setCameraPreset('city')}>{visualDemo ? '城市全景' : '城市业务视角'}</button>
         {visualDemo && <button onClick={() => setCameraPreset('context-close')}>外围材质近景</button>}
-        {visualDemo && <a href="/">返回正式 MVP</a>}
+        <a className="scene-mode-link" href={visualDemo ? '/' : '/?view=3d-demo'}>
+          {visualDemo ? '返回正式 MVP' : '切换三维 Demo'}
+        </a>
       </div>
       {visualDemo && <span className="style-demo-caption">上海 · 冷灰蓝三维 Demo · OSM 地块 {landuseStatus === 'ready' ? landuseCount : landuseStatus}</span>}
       {status === 'loading' && <span className="cesium-scene-status">{CESIUM_ION_TOKEN ? 'LOCAL GLB / OSM BUILDINGS LOADING' : 'LOCAL CITY MODEL LOADING'}</span>}

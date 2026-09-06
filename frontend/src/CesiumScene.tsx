@@ -20,11 +20,13 @@ const BIMANGLE_ORIGIN = { lon: 116.46, lat: 39.92 }
 const HUANGPU_SHP_CENTER = { lon: 121.47797014, lat: 31.21940076 }
 const HUANGPU_MODEL_CENTER_LOCAL = { x: 80.3409, y: -53.0326, z: 90 }
 const DEFAULT_EVENT = { lon: 121.4874, lat: 31.2297 }
-const LUJIAZUI_ANCHOR = { lon: 121.5018, lat: 31.2396 }
+// The purchased camera asset has no WGS84 control points. This visual anchor
+// uses the tallest source building as an approximate Shanghai Tower proxy.
+const LUJIAZUI_ANCHOR = { lon: 121.5014, lat: 31.2357 }
 const LUJIAZUI_LOCAL_BOUNDS = {
-  centerX: 160000,
-  baseY: 0,
-  centerZ: 150000,
+  centerX: 93665,
+  baseY: 267.0371,
+  centerZ: 142626,
   scale: 0.01,
   heading: 0,
 }
@@ -140,7 +142,7 @@ function createLujiazuiModelMatrix() {
   const modelAxes = Cesium.Matrix3.fromArray([
     1, 0, 0,
     0, 0, 1,
-    0, 1, 0,
+    0, -1, 0,
   ])
   const headingRotation = Cesium.Matrix3.fromRotationZ(Cesium.Math.toRadians(LUJIAZUI_LOCAL_BOUNDS.heading))
   const enuFromModel = Cesium.Matrix3.multiply(headingRotation, modelAxes, new Cesium.Matrix3())
@@ -343,8 +345,11 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
           url: LUJIAZUI_GLB_URL,
           scene: viewer.scene,
           modelMatrix: createLujiazuiModelMatrix(),
+          upAxis: Cesium.Axis.Z,
+          forwardAxis: Cesium.Axis.X,
           customShader: LUJIAZUI_MATERIAL_SHADER,
           shadows: Cesium.ShadowMode.ENABLED,
+          backFaceCulling: false,
           id: 'lujiazui-camera-max-glb',
         })
         if (disposed) {
@@ -420,8 +425,8 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer || !viewerReady) return
-    flyToTarget(viewer, target)
-  }, [target.lat, target.lon, viewerReady])
+    flyToTarget(viewer, source === 'lujiazui' ? LUJIAZUI_ANCHOR : target)
+  }, [target.lat, target.lon, viewerReady, source])
 
   useEffect(() => {
     const viewer = viewerRef.current
@@ -733,6 +738,8 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       data-source-reason={sourceReason}
       data-model-source={source === 'lujiazui' ? LUJIAZUI_GLB_URL : 'none'}
       data-model-material={source === 'lujiazui' ? 'procedural-blue-gray-preview' : 'none'}
+      data-model-georeference={source === 'lujiazui' ? 'approximate-wgs84-anchor' : 'none'}
+      data-model-anchor={source === 'lujiazui' ? `${LUJIAZUI_ANCHOR.lon},${LUJIAZUI_ANCHOR.lat}` : 'none'}
       data-local-tileset={CORE_TILES_URL}
       data-coordinate-system="WGS84 lon/lat"
       data-ground-source="osm-online-dimmed"
@@ -759,7 +766,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     >
       {status === 'loading' && <span className="cesium-scene-status">{CESIUM_ION_TOKEN ? 'LOCAL GLB / OSM BUILDINGS LOADING' : 'LOCAL CITY MODEL LOADING'}</span>}
       {status === 'error' && <span className="cesium-scene-status cesium-scene-status--error">CITY DATA UNAVAILABLE</span>}
-      {status === 'ready' && source && <span className="cesium-scene-source">{source === 'lujiazui' ? 'LUJIAZUI GLB · PROCEDURAL MATERIAL PREVIEW · TEXTURES MISSING' : source === 'osm' ? 'OSM BUILDINGS · OSM ONLINE BASEMAP' : source === 'local' ? `LOCAL HUANGPU · OSM ONLINE BASEMAP${sourceReasonSuffix}` : `DEMO CITY BLOCKS · OSM ONLINE BASEMAP${sourceReasonSuffix}`}</span>}
+      {status === 'ready' && source && <span className="cesium-scene-source">{source === 'lujiazui' ? 'LUJIAZUI GLB · APPROXIMATE WGS84 ANCHOR · TEXTURES MISSING' : source === 'osm' ? 'OSM BUILDINGS · OSM ONLINE BASEMAP' : source === 'local' ? `LOCAL HUANGPU · OSM ONLINE BASEMAP${sourceReasonSuffix}` : `DEMO CITY BLOCKS · OSM ONLINE BASEMAP${sourceReasonSuffix}`}</span>}
       <a className="cesium-scene-attribution" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Water data © OpenStreetMap contributors · ODbL</a>
     </div>
   )

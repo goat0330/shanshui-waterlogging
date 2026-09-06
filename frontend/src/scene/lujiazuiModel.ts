@@ -10,7 +10,38 @@ export const LUJIAZUI_LOCAL_BOUNDS = {
   heading: 0,
 }
 
+// Keep lower-detail context outside the purchased high-detail inset. The GLB
+// remains the foreground model; OSM/local tiles stay visible around it.
+export const LUJIAZUI_DETAIL_FOOTPRINT: readonly { lon: number; lat: number }[] = [
+  { lon: 121.4919, lat: 31.2446 },
+  { lon: 121.4960, lat: 31.2468 },
+  { lon: 121.5029, lat: 31.2461 },
+  { lon: 121.5087, lat: 31.2426 },
+  { lon: 121.5102, lat: 31.2362 },
+  { lon: 121.5077, lat: 31.2306 },
+  { lon: 121.5025, lat: 31.2278 },
+  { lon: 121.4964, lat: 31.2298 },
+  { lon: 121.4924, lat: 31.2353 },
+] as const
+
+export const LUJIAZUI_WATER_CLIP_BBOX = {
+  west: 121.488,
+  south: 31.224,
+  east: 121.516,
+  north: 31.250,
+}
+
 const MODEL_MATRIX_STORAGE_KEY = 'qixiao:lujiazui-model-matrix:v2'
+
+export function createLujiazuiContextClippingPolygons() {
+  return new Cesium.ClippingPolygonCollection({
+    polygons: [
+      new Cesium.ClippingPolygon({
+        positions: LUJIAZUI_DETAIL_FOOTPRINT.map((point) => Cesium.Cartesian3.fromDegrees(point.lon, point.lat)),
+      }),
+    ],
+  })
+}
 
 export type LujiazuiGeoreferenceStatus = 'approximate' | 'calibrated'
 

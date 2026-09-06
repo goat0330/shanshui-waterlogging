@@ -4,9 +4,9 @@ export const SHANGHAI_WATER_POLYGONS_GEOJSON_URL = '/demo/water/shanghai-water-p
 export const SHANGHAI_WATERWAYS_GEOJSON_URL = '/demo/water/shanghai-waterways.geojson'
 export const SHANGHAI_WATER_SOURCE_LABEL = '© OpenStreetMap contributors · Shanghai extract · 2026-08-25 · WGS84'
 
-const WATER_FILL = Cesium.Color.fromCssColorString('#0b73a8').withAlpha(0.50)
-const WATER_STROKE = Cesium.Color.fromCssColorString('#55e8f2').withAlpha(0.98)
-const STREAM_STROKE = Cesium.Color.fromCssColorString('#35bfd2').withAlpha(0.72)
+const WATER_FILL = Cesium.Color.fromCssColorString('#12394b').withAlpha(0.58)
+const WATER_STROKE = Cesium.Color.fromCssColorString('#4b93a7').withAlpha(0.78)
+const STREAM_STROKE = Cesium.Color.fromCssColorString('#397f90').withAlpha(0.62)
 
 export async function loadShanghaiHydroSystemLayer(viewer: Cesium.Viewer) {
   const [waterDataSource, waterwaysDataSource] = await Promise.all([

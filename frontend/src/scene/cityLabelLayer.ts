@@ -19,14 +19,31 @@ const FIXED_CITY_LABELS: CityLabel[] = [
 ]
 
 const LABEL_COLORS = {
-  road: Cesium.Color.fromCssColorString('#a9b8bc').withAlpha(0.62),
-  district: Cesium.Color.fromCssColorString('#91a3aa').withAlpha(0.46),
-  water: Cesium.Color.fromCssColorString('#7eabb5').withAlpha(0.5),
+  road: Cesium.Color.fromCssColorString('#405761').withAlpha(0.88),
+  district: Cesium.Color.fromCssColorString('#687a80').withAlpha(0.60),
+  water: Cesium.Color.fromCssColorString('#547b87').withAlpha(0.72),
 } as const
 
-function roadClassRank(roadClass: string) {
-  if (roadClass === 'motorway' || roadClass === 'elevated') return 3
-  if (roadClass === 'trunk') return 2
+function normalizedRoadClass(roadClass: string) {
+  return roadClass.trim().toLowerCase()
+}
+
+function roadClassRank(roadClassRaw: string) {
+  const roadClass = normalizedRoadClass(roadClassRaw)
+  if (
+    roadClass === 'motorway'
+    || roadClass === 'motorway_link'
+    || roadClass === 'trunk'
+    || roadClass === 'trunk_link'
+    || roadClass === 'elevated'
+  ) return 4
+  if (roadClass === 'primary' || roadClass === 'primary_link') return 3
+  if (
+    roadClass === 'secondary'
+    || roadClass === 'secondary_link'
+    || roadClass === 'tertiary'
+    || roadClass === 'tertiary_link'
+  ) return 2
   return 1
 }
 
@@ -35,7 +52,7 @@ function roadLabelCandidates(roadDataSource: Cesium.GeoJsonDataSource) {
   const now = Cesium.JulianDate.now()
 
   roadDataSource.entities.values.forEach((entity) => {
-    if (!entity.polyline) return
+    if (!entity.polyline || entity.show === false) return
     const properties = entity.properties?.getValue(now)
     const text = typeof properties?.name === 'string' ? properties.name.trim() : ''
     if (!text) return
@@ -43,10 +60,13 @@ function roadLabelCandidates(roadDataSource: Cesium.GeoJsonDataSource) {
       ? properties.fclass
       : typeof properties?.roadClass === 'string'
         ? properties.roadClass
-        : 'major'
+        : 'unclassified'
+    const rank = roadClassRank(roadClass)
+    if (rank <= 1) return
+
     const positions = entity.polyline.positions?.getValue(now)
     if (!positions || positions.length < 2) return
-    const score = roadClassRank(roadClass) * 100000 + positions.length
+    const score = rank * 100000 + positions.length
     const current = candidates.get(text)
     if (current && current.score >= score) return
     const midpoint = positions[Math.floor(positions.length / 2)]
@@ -57,7 +77,18 @@ function roadLabelCandidates(roadDataSource: Cesium.GeoJsonDataSource) {
 }
 
 function roadLabelMaxDistance(roadClass: string) {
-  return roadClass === 'motorway' || roadClass === 'trunk' || roadClass === 'elevated' ? 45000 : 18000
+  const rank = roadClassRank(roadClass)
+  if (rank >= 4) return 48000
+  if (rank === 3) return 28000
+  if (rank === 2) return 12000
+  return 0
+}
+
+function roadLabelFont(roadClass: string) {
+  const rank = roadClassRank(roadClass)
+  if (rank >= 4) return '600 12px sans-serif'
+  if (rank === 3) return '600 11px sans-serif'
+  return '500 10px sans-serif'
 }
 
 export async function loadCityLabelLayer(viewer: Cesium.Viewer, roadDataSource: Cesium.GeoJsonDataSource, roadSourceLabel: string) {
@@ -70,17 +101,17 @@ export async function loadCityLabelLayer(viewer: Cesium.Viewer, roadDataSource: 
       position: roadLabel.position,
       label: new Cesium.LabelGraphics({
         text: roadLabel.text,
-        font: '10px sans-serif',
+        font: roadLabelFont(roadLabel.roadClass),
         fillColor: LABEL_COLORS.road,
-        outlineColor: Cesium.Color.fromCssColorString('#0a1118').withAlpha(0.9),
+        outlineColor: Cesium.Color.fromCssColorString('#f2f1ec').withAlpha(0.96),
         outlineWidth: 2,
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        scaleByDistance: new Cesium.NearFarScalar(800, 1, 18000, 0.72),
+        scaleByDistance: new Cesium.NearFarScalar(900, 1, 30000, 0.67),
         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, roadLabelMaxDistance(roadLabel.roadClass)),
-        disableDepthTestDistance: 1200,
+        disableDepthTestDistance: 1500,
         showBackground: false,
       }),
       properties: {
@@ -101,17 +132,17 @@ export async function loadCityLabelLayer(viewer: Cesium.Viewer, roadDataSource: 
       position: Cesium.Cartesian3.fromDegrees(label.lon, label.lat, 0),
       label: new Cesium.LabelGraphics({
         text: label.text,
-        font: '11px sans-serif',
+        font: isWater ? '600 11px sans-serif' : '500 10px sans-serif',
         fillColor: LABEL_COLORS[label.kind],
-        outlineColor: Cesium.Color.fromCssColorString('#0a1118').withAlpha(0.9),
+        outlineColor: Cesium.Color.fromCssColorString('#f2f1ec').withAlpha(0.88),
         outlineWidth: 2,
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        scaleByDistance: new Cesium.NearFarScalar(800, 1, 10000, 0.72),
-        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, isWater ? 16000 : 14000),
-        disableDepthTestDistance: 800,
+        scaleByDistance: new Cesium.NearFarScalar(900, 1, 18000, 0.7),
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, isWater ? 20000 : 16000),
+        disableDepthTestDistance: 1100,
         showBackground: false,
       }),
       properties: {

@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium'
 
-export const LUJIAZUI_GLB_URL = '/runtime/lujiazui-camera-max/lujiazui.glb'
+export const LUJIAZUI_GLB_URL = '/runtime/lujiazui-camera-max/lujiazui.glb?v=astra-context'
 export const LUJIAZUI_ANCHOR = { lon: 121.5014, lat: 31.2357 }
 export const LUJIAZUI_LOCAL_BOUNDS = {
   centerX: 93665,

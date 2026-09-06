@@ -2599,6 +2599,15 @@ a {
 
 /* Scene placeholder */
 
+.dashboard-frame:has([data-camera-preset="astra-aerial-45"]) > :not(.digital-twin-scene),
+.digital-twin-scene:has([data-camera-preset="astra-aerial-45"]) > :not(.cesium-scene-mount) {
+  display: none;
+}
+
+.cesium-scene-mount[data-camera-preset="astra-aerial-45"] {
+  inset: 0;
+}
+
 .digital-twin-scene {
   position: absolute;
   z-index: 1;
@@ -3808,3 +3817,8 @@ a {
 }
 .analysis-method span { color: #78d5df; font-weight: 700; }
 .analysis-method small { font-size: 10px; color: rgba(194, 214, 221, 0.68); }
+.dashboard-frame:has([data-scene-mode="visual"]) > :not(.digital-twin-scene),
+.digital-twin-scene:has([data-scene-mode="visual"]) > :not(.cesium-scene-mount) { display: none; }
+.cesium-scene-mount[data-scene-mode="visual"] { inset: 0; }
+.style-demo-caption { position: absolute; z-index: 10; bottom: 45px; left: 22px; color: #dce4e8; background: #263b49cc; padding: 8px 12px; font-size: 12px; pointer-events: none; }
+[data-scene-mode="visual"] .scene-camera-presets { padding: 8px; background: #263b49dd; border-radius: 5px; }

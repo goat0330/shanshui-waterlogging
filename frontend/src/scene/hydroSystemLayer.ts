@@ -4,11 +4,11 @@ export const SHANGHAI_WATER_POLYGONS_GEOJSON_URL = '/demo/water/shanghai-water-p
 export const SHANGHAI_WATERWAYS_GEOJSON_URL = '/demo/water/shanghai-waterways.geojson'
 export const SHANGHAI_WATER_SOURCE_LABEL = '© OpenStreetMap contributors · Shanghai extract · 2026-08-25 · WGS84'
 
-const WATER_FILL = Cesium.Color.fromCssColorString('#12394b').withAlpha(0.58)
-const WATER_STROKE = Cesium.Color.fromCssColorString('#4b93a7').withAlpha(0.78)
-const STREAM_STROKE = Cesium.Color.fromCssColorString('#397f90').withAlpha(0.62)
+const WATER_FILL = Cesium.Color.fromCssColorString('#344c5b').withAlpha(0.92)
+const WATER_STROKE = Cesium.Color.fromCssColorString('#536570').withAlpha(0.35)
+const STREAM_STROKE = Cesium.Color.fromCssColorString('#536570').withAlpha(0.45)
 
-export async function loadShanghaiHydroSystemLayer(viewer: Cesium.Viewer) {
+export async function loadShanghaiHydroSystemLayer(viewer: Cesium.Viewer, visualDemo = false) {
   const [waterDataSource, waterwaysDataSource] = await Promise.all([
     Cesium.GeoJsonDataSource.load(SHANGHAI_WATER_POLYGONS_GEOJSON_URL, {
       clampToGround: true,
@@ -28,10 +28,10 @@ export async function loadShanghaiHydroSystemLayer(viewer: Cesium.Viewer) {
 
   waterDataSource.entities.values.forEach((entity) => {
     if (!entity.polygon) return
-    entity.polygon.material = new Cesium.ColorMaterialProperty(WATER_FILL)
+    entity.polygon.material = new Cesium.ColorMaterialProperty(visualDemo ? Cesium.Color.fromCssColorString('#365568') : WATER_FILL)
     entity.polygon.heightReference = new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND)
     entity.polygon.classificationType = new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN)
-    entity.polygon.outline = new Cesium.ConstantProperty(true)
+    entity.polygon.outline = new Cesium.ConstantProperty(false)
     entity.polygon.outlineColor = new Cesium.ConstantProperty(WATER_STROKE)
     entity.polygon.zIndex = new Cesium.ConstantProperty(1)
   })

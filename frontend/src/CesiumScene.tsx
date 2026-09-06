@@ -7,6 +7,11 @@ import { addDemoCityBlocks } from './scene/demoCityLayer'
 import { SHANGHAI_WATER_POLYGONS_GEOJSON_URL, SHANGHAI_WATER_SOURCE_LABEL, SHANGHAI_WATERWAYS_GEOJSON_URL, loadShanghaiHydroSystemLayer } from './scene/hydroSystemLayer'
 import { loadMajorRoadLayer, MAJOR_ROADS_GEOJSON_URL, MAJOR_ROADS_SOURCE_LABEL } from './scene/majorRoadLayer'
 import { addGeographicSensorEntity } from './scene/sensorEntity'
+import { applyOsmContextVisuals } from './scene/osmContextFacadeShader'
+import { getShanghaiSceneMode } from './scene/styleDemoMode'
+import { applyStyleDemoSceneLook } from './scene/styleDemoSceneLook'
+import { applyBuildingSurfaceV3 } from './scene/buildingSurfaceV3'
+import { loadShanghaiLanduseLayer } from './scene/landuseLayer'
 import {
   LUJIAZUI_ANCHOR,
   LUJIAZUI_CONTROL_POINTS,
@@ -34,11 +39,10 @@ const HUANGPU_MODEL_CENTER_LOCAL = { x: 80.3409, y: -53.0326, z: 90 }
 const DEFAULT_EVENT = { lon: 121.4874, lat: 31.2297 }
 const CONTEXT_CACHE_BYTES = 192 * 1024 * 1024
 const CONTEXT_OVERFLOW_BYTES = 96 * 1024 * 1024
+const CONTEXT_BUILDING_STYLE = new Cesium.Cesium3DTileStyle({
+  color: "color('#bbc4ca', 1.0)",
+})
 const LUJIAZUI_CLEANUP_NODE_NAMES = ['Sphere01', 'Plane01']
-// The purchased scene also contains four very large, near-flat site meshes.
-// They are source ground/road shells, not the building bodies; keep them out of
-// the geographic scene so the WGS84 basemap remains the only ground surface.
-const LUJIAZUI_SOURCE_GROUND_NODE_INDICES = [9, 10, 11, 12, 13, 14]
 const LUJIAZUI_CALIBRATION_MODE = getLujiazuiCalibrationMode()
 const LUJIAZUI_NO_TEXTURE_READABILITY_SHADER = new Cesium.CustomShader({
   lightingModel: Cesium.LightingModel.PBR,
@@ -165,8 +169,8 @@ async function waitForModelReady(model: Cesium.Model) {
   })
 }
 
-function cleanupLujiazuiModel(model: Cesium.Model, sourceGroundNodeNames: readonly string[] = []) {
-  const hiddenNodes = [...LUJIAZUI_CLEANUP_NODE_NAMES, ...sourceGroundNodeNames].filter((nodeName) => {
+function cleanupLujiazuiModel(model: Cesium.Model) {
+  const hiddenNodes = LUJIAZUI_CLEANUP_NODE_NAMES.filter((nodeName) => {
     const node = model.getNode(nodeName)
     if (!node) return false
     node.show = false
@@ -253,7 +257,18 @@ async function applyLujiazuiRiverMask(model: Cesium.Model) {
   }
 }
 
-function tuneContextTileset(tileset: Cesium.Cesium3DTileset, inset: boolean) {
+function createNeutralLighting(specular: number) {
+  const lighting = new Cesium.ImageBasedLighting()
+  lighting.imageBasedLightingFactor = new Cesium.Cartesian2(1, specular)
+  lighting.sphericalHarmonicCoefficients = [new Cesium.Cartesian3(0.65, 0.68, 0.72), ...Array.from({ length: 8 }, () => new Cesium.Cartesian3())]
+  return lighting
+}
+
+function tuneContextTileset(tileset: Cesium.Cesium3DTileset, inset: boolean, osm = false) {
+  tileset.style = osm ? undefined : CONTEXT_BUILDING_STYLE
+  // Opaque replacement avoids see-through walls and tinting by OSM source colors.
+  tileset.colorBlendMode = Cesium.Cesium3DTileColorBlendMode.REPLACE
+  tileset.imageBasedLighting = createNeutralLighting(0)
   tileset.maximumScreenSpaceError = 8
   tileset.cacheBytes = CONTEXT_CACHE_BYTES
   tileset.maximumCacheOverflowBytes = CONTEXT_OVERFLOW_BYTES
@@ -263,6 +278,12 @@ function tuneContextTileset(tileset: Cesium.Cesium3DTileset, inset: boolean) {
 }
 
 export function CesiumScene({ event, points, sensor = null, activeForecast, forecastFrame, selectedPointId, layers, onPointSelect, onSelectedPointScreenPosition }: CesiumSceneProps) {
+  const sceneMode = getShanghaiSceneMode()
+  const visualDemo = sceneMode === 'visual'
+  const [landuseStatus, setLanduseStatus] = useState('disabled')
+  const [landuseCount, setLanduseCount] = useState(0)
+  const [contextLoaded, setContextLoaded] = useState(false)
+  const [cameraPreset, setCameraPreset] = useState(new URLSearchParams(window.location.search).get('sceneView') === 'astra-aerial-45' ? 'astra-aerial-45' : 'city')
   const containerRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<Cesium.Viewer | null>(null)
   const basemapLayerRef = useRef<Cesium.ImageryLayer | null>(null)
@@ -271,6 +292,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
   const cityLayerRef = useRef<Cesium.PrimitiveCollection | null>(null)
   const hydroDataSourceRef = useRef<Cesium.GeoJsonDataSource[]>([])
   const roadDataSourceRef = useRef<Cesium.GeoJsonDataSource | null>(null)
+  const landuseDataSourceRef = useRef<Cesium.GeoJsonDataSource | null>(null)
   const labelDataSourceRef = useRef<Cesium.CustomDataSource | null>(null)
   const forecastDataSourceRef = useRef<Cesium.GeoJsonDataSource | null>(null)
   const modelRef = useRef<Cesium.Model | null>(null)
@@ -313,6 +335,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       : undefined
 
     const viewer = new Cesium.Viewer(containerRef.current, {
+      shadows: true,
       animation: false,
       baseLayer: false,
       baseLayerPicker: false,
@@ -328,25 +351,42 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     const cityLayer = new Cesium.PrimitiveCollection()
     viewer.scene.primitives.add(cityLayer)
     cityLayerRef.current = cityLayer
-    viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a1118')
-    viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0d1921')
+    viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#54626b')
+    if (viewer.scene.skyBox) viewer.scene.skyBox.show = false
+    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false
+    viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#7c8588')
+    viewer.scene.highDynamicRange = true
+    // Log depth causes coplanar facade striping on this centimetre-scale source.
+    viewer.scene.logarithmicDepthBuffer = false
+    viewer.camera.frustum.near = 10
+    viewer.scene.postProcessStages.exposure = 1.05
+    // Embedded material AO is retained. Screen-space AO creates terrain banding
+    // at this geographic scale, so it must not be stacked over the baked AO.
+    viewer.scene.postProcessStages.ambientOcclusion.enabled = false
+    viewer.scene.postProcessStages.fxaa.enabled = true
+    viewer.shadowMap.softShadows = true
+    viewer.shadowMap.size = 2048
+    viewer.shadowMap.darkness = 0.22
+    viewer.clock.currentTime = Cesium.JulianDate.fromIso8601('2026-06-01T04:00:00Z')
     const basemapProvider = new Cesium.OpenStreetMapImageryProvider({
       url: OSM_BASEMAP_URL,
       maximumLevel: 19,
     })
     const basemapLayer = viewer.imageryLayers.addImageryProvider(basemapProvider, 0)
-    basemapLayer.alpha = 0.72
-    basemapLayer.brightness = 0.48
-    basemapLayer.contrast = 1.14
-    basemapLayer.saturation = 0.18
+    basemapLayer.alpha = 0.08
+    basemapLayer.brightness = 0.9
+    basemapLayer.contrast = 0.65
+    basemapLayer.saturation = 0.0
     basemapLayer.show = layers.base
     basemapLayerRef.current = basemapLayer
     viewer.scene.globe.enableLighting = false
     viewer.scene.globe.showGroundAtmosphere = false
-    viewer.scene.globe.depthTestAgainstTerrain = WORLD_TERRAIN_ENABLED
+    // The source site sits slightly below terrain; draw it without changing its datum.
+    viewer.scene.globe.depthTestAgainstTerrain = false
     viewer.scene.fog.enabled = true
     viewer.scene.fog.density = 0.00008
     viewer.scene.fog.screenSpaceErrorFactor = 2
+    if (visualDemo) applyStyleDemoSceneLook(viewer, basemapLayer)
     viewerRef.current = viewer
     setViewerReady(true)
 
@@ -361,7 +401,6 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
         }
         placeHuangpuByRange(tileset)
         tuneContextTileset(tileset, inset)
-        tileset.style = new Cesium.Cesium3DTileStyle({ color: "color('#aeb4b7', 0.82)" })
         cityLayer.add(tileset)
         contextTilesetRef.current = tileset
         setContextSource('local')
@@ -404,7 +443,6 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       let model: Cesium.Model | undefined
       let modelAdded = false
       let gltfImageCount = 0
-      const sourceGroundNodeNames: string[] = []
       try {
         const initialPlacement = getInitialLujiazuiModelMatrix()
         setGeoreferenceStatus(initialPlacement.status)
@@ -414,27 +452,33 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
           modelMatrix: initialPlacement.matrix,
           upAxis: Cesium.Axis.Z,
           forwardAxis: Cesium.Axis.X,
-          shadows: Cesium.ShadowMode.ENABLED,
+          // Receiving self-shadows produces banding at the imported source scale.
+          // Keep soft shadow casting and the asset's baked AO without that artifact.
+          shadows: Cesium.ShadowMode.CAST_ONLY,
           backFaceCulling: false,
+          imageBasedLighting: createNeutralLighting(0.45),
           gltfCallback: (gltf) => {
             gltfImageCount = Array.isArray(gltf.images) ? gltf.images.length : 0
-            LUJIAZUI_SOURCE_GROUND_NODE_INDICES.forEach((nodeIndex) => {
-              const node = gltf.nodes?.[nodeIndex]
-              if (!node) return
-              const nodeName = `LujiazuiSourceGround-${nodeIndex}`
-              node.name = nodeName
-              sourceGroundNodeNames.push(nodeName)
+            // Original lawn node only: mute its runtime color without editing the asset.
+            const lawn = gltf.nodes?.[14]
+            const lawnMaterials = new Set<number>((gltf.meshes?.[lawn?.mesh]?.primitives ?? []).map((primitive: { material: number }) => primitive.material))
+            lawnMaterials.forEach((index) => {
+              const pbr = gltf.materials?.[index]?.pbrMetallicRoughness
+              const color = pbr?.baseColorFactor
+              if (!color) return
+              const gray = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
+              pbr.baseColorFactor = [0, 1, 2].map((channel) => (gray * 0.45 + color[channel] * 0.55) * 0.88).concat(color[3])
             })
           },
           environmentMapOptions: {
             enabled: true,
             maximumPositionEpsilon: 600,
             maximumSecondsDifference: 1800,
-            atmosphereScatteringIntensity: 2.4,
-            brightness: 0.92,
-            saturation: 0.72,
-            groundColor: Cesium.Color.fromCssColorString('#4a5355'),
-            groundAlbedo: 0.2,
+            atmosphereScatteringIntensity: 0.0,
+            brightness: 1.0,
+            saturation: 0.15,
+            groundColor: Cesium.Color.fromCssColorString('#9ca4aa'),
+            groundAlbedo: 0.45,
           },
           id: 'lujiazui-camera-max-glb',
         })
@@ -446,7 +490,13 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
         modelAdded = true
         modelRef.current = model
         await waitForModelReady(model)
-        const hiddenNodes = cleanupLujiazuiModel(model, sourceGroundNodeNames)
+        const hiddenNodes = cleanupLujiazuiModel(model)
+        // The source asphalt sheet extends kilometres beyond the core and
+        // occludes real parcels/roads. Replace that sheet only in the demo.
+        if (visualDemo) {
+          const asphalt = model.getNode('DK__柏油马路')
+          if (asphalt) asphalt.show = false
+        }
         const riverMasks = await applyLujiazuiRiverMask(model)
         if (disposed) return false
         setRiverClipCount(riverMasks)
@@ -455,9 +505,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
           setLujiazuiMaterialStatus('source-factors-readability')
         } else {
           setLujiazuiMaterialStatus('source-pbr')
-          // Keep the Cesium default scene light for this asset. The optional
-          // global HDR/IBL pass makes this OBJ-derived PBR scene black in the
-          // current browser runtime; model PBR and embedded textures remain on.
+          // Embedded PBR stays intact; scene lighting supplies neutral overcast fill.
         }
         if (LUJIAZUI_CALIBRATION_MODE === 'capture') {
           calibrationMarkerRefs.current = addLujiazuiCalibrationMarkers(viewer)
@@ -486,15 +534,23 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
 
       try {
         const tileset = await Cesium.createOsmBuildingsAsync({
-          style: new Cesium.Cesium3DTileStyle({ color: "color('#aab1b5', 0.78)" }),
           showOutline: false,
           enableShowOutline: false,
+          defaultColor: Cesium.Color.fromCssColorString('#aab4b7'),
         })
+        applyOsmContextVisuals(tileset)
         if (disposed) {
           tileset.destroy()
           return
         }
-        tuneContextTileset(tileset, inset)
+        tuneContextTileset(tileset, inset, true)
+        if (visualDemo) applyBuildingSurfaceV3(tileset)
+        if (visualDemo) {
+          tileset.allTilesLoaded.addEventListener(() => { if (!disposed) setContextLoaded(true) })
+          tileset.loadProgress.addEventListener((pending, processing) => {
+            if (!disposed && (pending > 0 || processing > 0)) setContextLoaded(false)
+          })
+        }
         cityLayer.add(tileset)
         contextTilesetRef.current = tileset
         setContextSource('osm')
@@ -536,8 +592,30 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer || !viewerReady) return
-    flyToTarget(viewer, target)
-  }, [target.lat, target.lon, viewerReady, source])
+    if (cameraPreset === 'astra-aerial-45' && modelRef.current) {
+      // Blender review_scene.py: convert Z-up camera into the source model axes.
+      const matrix = modelRef.current.modelMatrix
+      const destination = Cesium.Matrix4.multiplyByPoint(matrix, new Cesium.Cartesian3(-95000, 175000, 330000), new Cesium.Cartesian3())
+      const focus = Cesium.Matrix4.multiplyByPoint(matrix, new Cesium.Cartesian3(88000, 16000, 132000), new Cesium.Cartesian3())
+      const direction = Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(focus, destination, new Cesium.Cartesian3()), new Cesium.Cartesian3())
+      const vertical = Cesium.Cartesian3.normalize(Cesium.Matrix4.multiplyByPointAsVector(matrix, Cesium.Cartesian3.UNIT_Y, new Cesium.Cartesian3()), new Cesium.Cartesian3())
+      const right = Cesium.Cartesian3.normalize(Cesium.Cartesian3.cross(direction, vertical, new Cesium.Cartesian3()), new Cesium.Cartesian3())
+      const up = Cesium.Cartesian3.cross(right, direction, new Cesium.Cartesian3())
+      viewer.camera.cancelFlight()
+      ;(viewer.camera.frustum as Cesium.PerspectiveFrustum).fov = 2 * Math.atan(36 / (2 * 52))
+      viewer.camera.setView({ destination, orientation: { direction, up } })
+    } else if (visualDemo) {
+      viewer.camera.cancelFlight()
+      ;(viewer.camera.frustum as Cesium.PerspectiveFrustum).fov = Cesium.Math.toRadians(50)
+      const close = cameraPreset === 'context-close'
+      viewer.camera.lookAt(Cesium.Cartesian3.fromDegrees(close ? 121.479 : 121.484, 31.239, 40),
+        new Cesium.HeadingPitchRange(Cesium.Math.toRadians(55), Cesium.Math.toRadians(-24), close ? 2800 : 4500))
+      viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY)
+    } else {
+      ;(viewer.camera.frustum as Cesium.PerspectiveFrustum).fov = Cesium.Math.toRadians(60)
+      flyToTarget(viewer, target)
+    }
+  }, [target.lat, target.lon, viewerReady, source, cameraPreset])
 
   useEffect(() => {
     const viewer = viewerRef.current
@@ -596,7 +674,7 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
 
     let cancelled = false
     setHydroStatus('loading')
-    void loadShanghaiHydroSystemLayer(viewer).then((dataSource) => {
+    void loadShanghaiHydroSystemLayer(viewer, visualDemo).then((dataSource) => {
       if (cancelled || viewerRef.current !== viewer || viewer.isDestroyed()) {
         if (!viewer.isDestroyed()) dataSource.forEach((source) => viewer.dataSources.remove(source, true))
         return
@@ -624,7 +702,27 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
     let cancelled = false
     setRoadStatus('loading')
     setLabelStatus('loading')
-    void loadMajorRoadLayer(viewer).then(async (result) => {
+    const prepareParcels = async () => {
+      if (!visualDemo) return
+      setLanduseStatus('loading')
+      try {
+        const parcels = await loadShanghaiLanduseLayer(viewer)
+        if (cancelled || viewer.isDestroyed()) {
+          if (!viewer.isDestroyed()) viewer.dataSources.remove(parcels, true)
+          return
+        }
+        landuseDataSourceRef.current = parcels
+        setLanduseCount(parcels.entities.values.length)
+        setLanduseStatus('ready')
+      } catch {
+        if (!cancelled) setLanduseStatus('error')
+      }
+    }
+    void prepareParcels().then(() => {
+      if (cancelled || viewer.isDestroyed()) return null
+      return loadMajorRoadLayer(viewer, visualDemo)
+    }).then(async (result) => {
+      if (!result) return
       if (cancelled || viewerRef.current !== viewer || viewer.isDestroyed()) {
         if (!viewer.isDestroyed()) viewer.dataSources.remove(result.dataSource, true)
         return
@@ -657,6 +755,10 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
 
     return () => {
       cancelled = true
+      if (landuseDataSourceRef.current && !viewer.isDestroyed()) {
+        viewer.dataSources.remove(landuseDataSourceRef.current, true)
+        landuseDataSourceRef.current = null
+      }
       if (roadDataSourceRef.current && viewerRef.current === viewer && !viewer.isDestroyed()) {
         viewer.dataSources.remove(roadDataSourceRef.current, true)
         roadDataSourceRef.current = null
@@ -882,8 +984,14 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
   return (
     <div
       className="cesium-scene-mount"
+      data-scene-mode={sceneMode}
+      data-landuse-status={landuseStatus}
+      data-landuse-count={landuseCount}
+      data-context-surface={visualDemo ? 'building-surface-v3' : 'existing'}
+      data-context-loaded={visualDemo ? contextLoaded : undefined}
       ref={containerRef}
       aria-label="上海 Cesium 三维城市底座"
+      data-camera-preset={cameraPreset}
       data-source={source ?? 'loading'}
       data-source-reason={sourceReason}
       data-model-source={source === 'lujiazui' ? LUJIAZUI_GLB_URL : 'none'}
@@ -917,6 +1025,13 @@ export function CesiumScene({ event, points, sensor = null, activeForecast, fore
       data-forecast-geometry={forecastFrame?.geometryUrl ?? 'none'}
       data-forecast-status={forecastStatus}
     >
+      <div className="scene-camera-presets" style={{ position: 'absolute', top: 34, left: '50%', transform: 'translateX(-50%)', zIndex: 10, display: 'flex', gap: 8, pointerEvents: 'auto' }}>
+        <button onClick={() => setCameraPreset('astra-aerial-45')}>Astra aerial_45</button>
+        <button onClick={() => setCameraPreset('city')}>{visualDemo ? '城市全景' : '城市业务视角'}</button>
+        {visualDemo && <button onClick={() => setCameraPreset('context-close')}>外围材质近景</button>}
+        {visualDemo && <a href="/">返回正式 MVP</a>}
+      </div>
+      {visualDemo && <span className="style-demo-caption">上海 · 冷灰蓝三维 Demo · OSM 地块 {landuseStatus === 'ready' ? landuseCount : landuseStatus}</span>}
       {status === 'loading' && <span className="cesium-scene-status">{CESIUM_ION_TOKEN ? 'LOCAL GLB / OSM BUILDINGS LOADING' : 'LOCAL CITY MODEL LOADING'}</span>}
       {status === 'error' && <span className="cesium-scene-status cesium-scene-status--error">CITY DATA UNAVAILABLE</span>}
       {status === 'ready' && source && <span className="cesium-scene-source">{source === 'lujiazui' ? `LUJIAZUI GLB · ${georeferenceStatus === 'calibrated' ? 'CALIBRATED WGS84' : 'APPROXIMATE WGS84'} · ${lujiazuiMaterialStatus === 'source-pbr' ? 'SOURCE PBR' : lujiazuiMaterialStatus === 'source-factors-readability' ? 'SOURCE FACTORS · TEXTURES MISSING' : 'MATERIAL CHECKING'} · CONTEXT ${contextSource.toUpperCase()} · RIVER MASK ${riverClipCount}` : source === 'osm' ? 'OSM BUILDINGS · OSM ONLINE BASEMAP' : source === 'local' ? `LOCAL HUANGPU · OSM ONLINE BASEMAP${sourceReasonSuffix}` : `DEMO CITY BLOCKS · OSM ONLINE BASEMAP${sourceReasonSuffix}`}</span>}

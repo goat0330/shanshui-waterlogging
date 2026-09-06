@@ -7,7 +7,9 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:visual-demo": "node scripts/verify_visual_demo.mjs",
+    "build:render": "npm run verify:visual-demo && vite build"
   },
   "dependencies": {
     "cesium": "^1.144.0",

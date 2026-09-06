@@ -1,8 +1,10 @@
 import * as Cesium from 'cesium'
 
 export const MAJOR_ROADS_GEOJSON_URL = '/data/scene/shanghai-major-roads.geojson'
+export const STYLE_DEMO_ROADS_GEOJSON_URL = '/data/scene/shanghai-demo-roads.geojson'
 export const MAJOR_ROADS_FALLBACK_GEOJSON_URL = '/demo/roads/shanghai-major-roads.geojson'
 export const MAJOR_ROADS_SOURCE_LABEL = '© OpenStreetMap contributors · Geofabrik Shanghai · 2026-08-24 · WGS84'
+export const STYLE_DEMO_ROADS_SOURCE_LABEL = '© OpenStreetMap contributors · Overpass · visual-demo AOI · WGS84'
 export const MAJOR_ROADS_FALLBACK_SOURCE_LABEL = 'SYNTHETIC DEMO · approximate WGS84 lon/lat centerlines'
 
 export interface MajorRoadLayerResult {
@@ -29,9 +31,6 @@ type RoadVisual = {
   zIndex: number
 }
 
-// Screen-space hierarchy is intentional: at the current 5–15 km business view,
-// the old 1–2 px lines disappeared into the basemap. Main roads now remain legible
-// while local streets fade out with distance.
 const ROAD_STYLE: Record<RoadTier, RoadVisual> = {
   expressway: {
     color: Cesium.Color.fromCssColorString('#365662').withAlpha(0.98),
@@ -67,26 +66,23 @@ const ROAD_STYLE: Record<RoadTier, RoadVisual> = {
   },
 }
 
+const DEMO_COLORS: Record<RoadTier, string> = {
+  expressway: '#465761',
+  primary: '#586A74',
+  secondary: '#72818A',
+  local: '#939DA1',
+}
+const DEMO_ALPHA: Record<RoadTier, number> = { expressway: 0.98, primary: 0.96, secondary: 0.90, local: 0.68 }
+
 function normalizeRoadClass(value: string) {
   return value.trim().toLowerCase()
 }
 
 function classifyRoad(roadClassRaw: string): RoadTier {
   const roadClass = normalizeRoadClass(roadClassRaw)
-  if (
-    roadClass === 'motorway'
-    || roadClass === 'motorway_link'
-    || roadClass === 'trunk'
-    || roadClass === 'trunk_link'
-    || roadClass === 'elevated'
-  ) return 'expressway'
-  if (roadClass === 'primary' || roadClass === 'primary_link') return 'primary'
-  if (
-    roadClass === 'secondary'
-    || roadClass === 'secondary_link'
-    || roadClass === 'tertiary'
-    || roadClass === 'tertiary_link'
-  ) return 'secondary'
+  if (['motorway', 'motorway_link', 'trunk', 'trunk_link', 'elevated'].includes(roadClass)) return 'expressway'
+  if (['primary', 'primary_link'].includes(roadClass)) return 'primary'
+  if (['secondary', 'secondary_link', 'tertiary', 'tertiary_link'].includes(roadClass)) return 'secondary'
   return 'local'
 }
 
@@ -94,7 +90,7 @@ function truthyFlag(value: unknown) {
   if (typeof value === 'boolean') return value
   if (typeof value !== 'string') return false
   const normalized = value.trim().toLowerCase()
-  return normalized === 't' || normalized === 'true' || normalized === '1' || normalized === 'yes'
+  return ['t', 'true', '1', 'yes'].includes(normalized)
 }
 
 function getRoadProps(entity: Cesium.Entity): Required<Pick<RoadProps, 'fclass'>> & RoadProps {
@@ -107,17 +103,21 @@ function getRoadProps(entity: Cesium.Entity): Required<Pick<RoadProps, 'fclass'>
   return { ...properties, fclass }
 }
 
-async function loadRoadDataSource(url: string, visualDemo = false) {
-  let data = url as string | object
-  if (visualDemo) {
-    const geojson = await Cesium.Resource.fetchJson({url})
-    // The demo covers the supplied landuse AOI, not the entire Shanghai road
-    // extract. Avoid allocating thousands of off-screen ground polylines.
-    geojson.features = geojson.features.filter((feature: {geometry: {type: string, coordinates: number[][] | number[][][]}}) => {
-      const points = feature.geometry.type === 'MultiLineString' ? (feature.geometry.coordinates as number[][][]).flat() : feature.geometry.coordinates as number[][]
-      const lons = points.map(p => p[0]), lats = points.map(p => p[1])
-      return Math.max(...lons) >= 121.40 && Math.min(...lons) <= 121.60 && Math.max(...lats) >= 31.17 && Math.min(...lats) <= 31.31
-    })
+function intersectsDemoAoi(feature: { geometry: { type: string; coordinates: number[][] | number[][][] } }) {
+  const points = feature.geometry.type === 'MultiLineString'
+    ? (feature.geometry.coordinates as number[][][]).flat()
+    : feature.geometry.coordinates as number[][]
+  if (!points.length) return false
+  const lons = points.map((p) => p[0])
+  const lats = points.map((p) => p[1])
+  return Math.max(...lons) >= 121.40 && Math.min(...lons) <= 121.60 && Math.max(...lats) >= 31.17 && Math.min(...lats) <= 31.31
+}
+
+async function loadRoadDataSource(url: string, cropToDemoAoi = false) {
+  let data: string | object = url
+  if (cropToDemoAoi) {
+    const geojson = await Cesium.Resource.fetchJson({ url }) as { features: Array<{ geometry: { type: string; coordinates: number[][] | number[][][] } }> }
+    geojson.features = geojson.features.filter(intersectsDemoAoi)
     data = geojson
   }
   return Cesium.GeoJsonDataSource.load(data, {
@@ -127,35 +127,68 @@ async function loadRoadDataSource(url: string, visualDemo = false) {
   })
 }
 
-export async function loadMajorRoadLayer(viewer: Cesium.Viewer, visualDemo = false): Promise<MajorRoadLayerResult> {
-  let dataSource: Cesium.GeoJsonDataSource
-  let sourceUrl = MAJOR_ROADS_GEOJSON_URL
-  let sourceLabel = MAJOR_ROADS_SOURCE_LABEL
-  let fallback = false
-
-  try {
-    dataSource = await loadRoadDataSource(MAJOR_ROADS_GEOJSON_URL, visualDemo)
-  } catch {
-    dataSource = await loadRoadDataSource(MAJOR_ROADS_FALLBACK_GEOJSON_URL, visualDemo)
-    sourceUrl = MAJOR_ROADS_FALLBACK_GEOJSON_URL
-    sourceLabel = MAJOR_ROADS_FALLBACK_SOURCE_LABEL
-    fallback = true
+async function chooseRoadSource(visualDemo: boolean) {
+  if (visualDemo) {
+    try {
+      return {
+        dataSource: await loadRoadDataSource(STYLE_DEMO_ROADS_GEOJSON_URL),
+        sourceUrl: STYLE_DEMO_ROADS_GEOJSON_URL,
+        sourceLabel: STYLE_DEMO_ROADS_SOURCE_LABEL,
+        fallback: false,
+      }
+    } catch {
+      // Use the existing real major-road dataset if the optional detailed AOI file
+      // has not yet been generated. Never synthesize missing local streets.
+      try {
+        return {
+          dataSource: await loadRoadDataSource(MAJOR_ROADS_GEOJSON_URL, true),
+          sourceUrl: MAJOR_ROADS_GEOJSON_URL,
+          sourceLabel: MAJOR_ROADS_SOURCE_LABEL,
+          fallback: false,
+        }
+      } catch {
+        // fall through to the explicit synthetic demo fallback
+      }
+    }
+  } else {
+    try {
+      return {
+        dataSource: await loadRoadDataSource(MAJOR_ROADS_GEOJSON_URL),
+        sourceUrl: MAJOR_ROADS_GEOJSON_URL,
+        sourceLabel: MAJOR_ROADS_SOURCE_LABEL,
+        fallback: false,
+      }
+    } catch {
+      // fall through
+    }
   }
 
-  dataSource.name = fallback ? 'Shanghai roads · synthetic fallback' : 'Shanghai roads · OSM Geofabrik hierarchy'
+  return {
+    dataSource: await loadRoadDataSource(MAJOR_ROADS_FALLBACK_GEOJSON_URL, visualDemo),
+    sourceUrl: MAJOR_ROADS_FALLBACK_GEOJSON_URL,
+    sourceLabel: MAJOR_ROADS_FALLBACK_SOURCE_LABEL,
+    fallback: true,
+  }
+}
+
+export async function loadMajorRoadLayer(viewer: Cesium.Viewer, visualDemo = false): Promise<MajorRoadLayerResult> {
+  const result = await chooseRoadSource(visualDemo)
+  const { dataSource } = result
+  dataSource.name = result.fallback ? 'Shanghai roads · synthetic fallback' : 'Shanghai roads · OSM hierarchy'
 
   dataSource.entities.values.forEach((entity) => {
     if (!entity.polyline) return
-
     const properties = getRoadProps(entity)
     const tier = classifyRoad(properties.fclass)
-    const style = visualDemo ? {
-      ...ROAD_STYLE[tier],
-      color: Cesium.Color.fromCssColorString({expressway: '#465761', primary: '#586A74', secondary: '#72818A', local: '#939DA1'}[tier]).withAlpha({expressway: 0.98, primary: 0.96, secondary: 0.90, local: 0.68}[tier]),
-      outline: Cesium.Color.fromCssColorString(tier === 'expressway' ? '#9CA8AC' : '#B3BCBE'),
-    } : ROAD_STYLE[tier]
+    const base = ROAD_STYLE[tier]
+    const style = visualDemo
+      ? {
+          ...base,
+          color: Cesium.Color.fromCssColorString(DEMO_COLORS[tier]).withAlpha(DEMO_ALPHA[tier]),
+          outline: Cesium.Color.fromCssColorString(tier === 'expressway' ? '#9CA8AC' : '#B3BCBE').withAlpha(tier === 'local' ? 0.25 : 0.65),
+        }
+      : base
 
-    // Underground segments should not be painted on the surface.
     if (truthyFlag(properties.tunnel)) {
       entity.show = false
       return
@@ -171,12 +204,10 @@ export async function loadMajorRoadLayer(viewer: Cesium.Viewer, visualDemo = fal
     entity.polyline.clampToGround = new Cesium.ConstantProperty(true)
     if (visualDemo) entity.polyline.classificationType = new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN)
     entity.polyline.arcType = new Cesium.ConstantProperty(Cesium.ArcType.GEODESIC)
-    entity.polyline.distanceDisplayCondition = new Cesium.ConstantProperty(
-      new Cesium.DistanceDisplayCondition(0, style.maxDistance),
-    )
+    entity.polyline.distanceDisplayCondition = new Cesium.ConstantProperty(new Cesium.DistanceDisplayCondition(0, style.maxDistance))
     entity.polyline.zIndex = new Cesium.ConstantProperty(style.zIndex)
   })
 
   await viewer.dataSources.add(dataSource)
-  return { dataSource, sourceUrl, sourceLabel, fallback }
+  return result
 }

@@ -3,14 +3,16 @@ import "cesium/Build/Cesium/Widgets/widgets.css"
 import "./style.css"
 
 type ForecastKey = "NOW" | "PLUS_10" | "PLUS_30"
-type SourceKey = "shanghai" | "shanghai-local" | "shanghai-core" | "osm" | "local"
+type SourceKey = "lujiazui-glb" | "shanghai" | "shanghai-local" | "shanghai-core" | "osm" | "local"
 type MaterialMode = "style" | "shader"
 type LayerKey = "city" | "river" | "flood" | "risk"
 
 const SHANGHAI_TILES_URL = "https://data.mars3d.cn/3dtiles/jzw-shanghai/tileset.json"
 const LOCAL_SHANGHAI_TILES_URL = "/data/tiles/shanghai-aoi/tileset.json"
 const CORE_SHANGHAI_TILES_URL = "/data/runtime/shanghai-core/tileset.json"
+const LUJIAZUI_GLB_URL = "/data/runtime/lujiazui-camera-max/lujiazui.glb"
 const SOURCE_LABELS: Record<SourceKey, string> = {
+  "lujiazui-glb": "陆家嘴群楼 · GLB local raw",
   shanghai: "Shanghai 3D Tiles · remote",
   "shanghai-local": "Shanghai AOI 本地缓存 · AOI cache",
   "shanghai-core": "Shanghai Core Local · core local",
@@ -18,6 +20,15 @@ const SOURCE_LABELS: Record<SourceKey, string> = {
   local: "Local Demo Blocks · demo blocks"
 }
 const EVENT = { lon: 121.4874, lat: 31.2297 }
+const LUJIAZUI_ANCHOR = { lon: 121.5018, lat: 31.2396 }
+const LUJIAZUI_LOCAL_BOUNDS = {
+  centerX: 160000,
+  baseY: 0,
+  centerZ: 150000,
+  scale: 0.01,
+  heading: 0
+}
+const LUJIAZUI_CLEANUP_NODE_NAMES = ["Sphere01", "Plane01"]
 const BIMANGLE_DEFAULT_ORIGIN = { lon: 116.46, lat: 39.92 }
 const HUANGPU_SHP_CENTER = { lon: 121.47797014, lat: 31.21940076 }
 const HUANGPU_MODEL_CENTER_LOCAL = { x: 80.3409, y: -53.0326, z: 90 }
@@ -84,8 +95,9 @@ const sourceSelect = document.querySelector<HTMLSelectElement>("#sourceSelect")!
 const materialSelect = document.querySelector<HTMLSelectElement>("#materialSelect")!
 
 let activeTileset: Cesium.Cesium3DTileset | undefined
+let activeModel: Cesium.Model | undefined
 let currentForecast: ForecastKey = "NOW"
-let currentSource: SourceKey = "shanghai"
+let currentSource: SourceKey = "lujiazui-glb"
 let currentMaterialMode: MaterialMode = "style"
 
 const MATERIAL_MODE_LABELS: Record<MaterialMode, string> = {
@@ -135,6 +147,98 @@ function applyCoreShanghaiPlacement(tileset: Cesium.Cesium3DTileset) {
   )
   const sourceInverse = Cesium.Matrix4.inverse(sourceCenterFrame, new Cesium.Matrix4())
   tileset.modelMatrix = Cesium.Matrix4.multiply(targetFrame, sourceInverse, new Cesium.Matrix4())
+}
+
+function createLujiazuiModelMatrix() {
+  const anchorFrame = Cesium.Transforms.eastNorthUpToFixedFrame(
+    Cesium.Cartesian3.fromDegrees(LUJIAZUI_ANCHOR.lon, LUJIAZUI_ANCHOR.lat, 0)
+  )
+  const modelAxes = Cesium.Matrix3.fromArray([
+    1, 0, 0,
+    0, 0, 1,
+    0, 1, 0
+  ])
+  const headingRotation = Cesium.Matrix3.fromRotationZ(Cesium.Math.toRadians(LUJIAZUI_LOCAL_BOUNDS.heading))
+  const enuFromModel = Cesium.Matrix3.multiply(headingRotation, modelAxes, new Cesium.Matrix3())
+  const enuFromModelFrame = Cesium.Matrix4.fromRotationTranslation(enuFromModel, Cesium.Cartesian3.ZERO)
+  const localScale = Cesium.Matrix4.fromUniformScale(LUJIAZUI_LOCAL_BOUNDS.scale)
+  const localCenter = Cesium.Matrix4.fromTranslation(
+    Cesium.Cartesian3.fromElements(
+      -LUJIAZUI_LOCAL_BOUNDS.centerX,
+      -LUJIAZUI_LOCAL_BOUNDS.baseY,
+      -LUJIAZUI_LOCAL_BOUNDS.centerZ
+    )
+  )
+  const scaledLocal = Cesium.Matrix4.multiply(localScale, localCenter, new Cesium.Matrix4())
+  const geographicLocal = Cesium.Matrix4.multiply(enuFromModelFrame, scaledLocal, new Cesium.Matrix4())
+  return Cesium.Matrix4.multiply(anchorFrame, geographicLocal, new Cesium.Matrix4())
+}
+
+function flyToLujiazui() {
+  const target = Cesium.Cartesian3.fromDegrees(LUJIAZUI_ANCHOR.lon, LUJIAZUI_ANCHOR.lat, 0)
+  viewer.camera.flyToBoundingSphere(new Cesium.BoundingSphere(target, 1700), {
+    offset: new Cesium.HeadingPitchRange(
+      Cesium.Math.toRadians(25),
+      Cesium.Math.toRadians(-38),
+      5600
+    ),
+    duration: 1.4
+  })
+  setLog("已 FlyTo 陆家嘴 GLB 试验 anchor；业务事件仍保留独立 geographic entity")
+}
+
+function applyLujiazuiLighting(model: Cesium.Model) {
+  const anchorFrame = Cesium.Transforms.eastNorthUpToFixedFrame(
+    Cesium.Cartesian3.fromDegrees(LUJIAZUI_ANCHOR.lon, LUJIAZUI_ANCHOR.lat, 0)
+  )
+  const enuToFixed = Cesium.Matrix4.getMatrix3(anchorFrame, new Cesium.Matrix3())
+  const lightFromSurfaceEnu = Cesium.Cartesian3.normalize(
+    new Cesium.Cartesian3(-0.35, -0.25, 0.9),
+    new Cesium.Cartesian3()
+  )
+  const lightFromSurfaceFixed = Cesium.Matrix3.multiplyByVector(
+    enuToFixed,
+    lightFromSurfaceEnu,
+    new Cesium.Cartesian3()
+  )
+  const lightDirection = Cesium.Cartesian3.negate(
+    lightFromSurfaceFixed,
+    new Cesium.Cartesian3()
+  )
+  viewer.scene.skyAtmosphere = new Cesium.SkyAtmosphere()
+  viewer.scene.skyAtmosphere.hueShift = 0.58
+  viewer.scene.skyAtmosphere.saturationShift = -0.18
+  viewer.scene.skyAtmosphere.brightnessShift = -0.12
+  viewer.scene.light = new Cesium.DirectionalLight({
+    direction: lightDirection,
+    color: Cesium.Color.fromCssColorString("#dbeeff"),
+    intensity: 1.35
+  })
+  viewer.scene.shadowMap.enabled = true
+  viewer.scene.shadowMap.softShadows = true
+  viewer.scene.shadowMap.darkness = 0.62
+  viewer.scene.shadowMap.maximumDistance = 6000
+  // AO blackens this raw GLB in the current Chromium smoke environment; keep
+  // the stage off so the material evidence remains readable.
+  viewer.scene.postProcessStages.ambientOcclusion.enabled = false
+  viewer.scene.postProcessStages.bloom.enabled = true
+  viewer.scene.postProcessStages.bloom.uniforms.brightness = -0.18
+  viewer.scene.postProcessStages.bloom.uniforms.contrast = 100.0
+  viewer.scene.postProcessStages.bloom.uniforms.sigma = 2.0
+  viewer.scene.postProcessStages.bloom.uniforms.stepSize = 1.0
+  model.imageBasedLighting.imageBasedLightingFactor = new Cesium.Cartesian2(0.82, 0.62)
+  model.lightColor = new Cesium.Cartesian3(1.0, 0.95, 0.9)
+  model.shadows = Cesium.ShadowMode.ENABLED
+}
+
+function cleanupLujiazuiModel(model: Cesium.Model) {
+  const hiddenNodes = LUJIAZUI_CLEANUP_NODE_NAMES.filter((nodeName) => {
+    const node = model.getNode(nodeName)
+    if (!node) return false
+    node.show = false
+    return true
+  })
+  return hiddenNodes.join(",") || "none"
 }
 
 function addRiverLayer() {
@@ -291,6 +395,10 @@ function flyToEvent() {
 }
 
 function applyMaterialMode() {
+  if (activeModel) {
+    setLog(`[source=${SOURCE_LABELS[currentSource]}] GLB 保留原始材质；本轮不应用 Tileset 着色`)
+    return
+  }
   if (!activeTileset) return
 
   if (currentMaterialMode === "shader") {
@@ -305,6 +413,24 @@ function applyMaterialMode() {
   })
 }
 
+async function waitForModelReady(model: Cesium.Model) {
+  if (model.ready) return
+  await new Promise<void>((resolve, reject) => {
+    let removeReady: () => void = () => {}
+    let removeError: () => void = () => {}
+    removeReady = model.readyEvent.addEventListener(() => {
+      removeReady()
+      removeError()
+      resolve()
+    })
+    removeError = model.errorEvent.addEventListener((error) => {
+      removeReady()
+      removeError()
+      reject(error)
+    })
+  })
+}
+
 async function loadCitySource(source: SourceKey) {
   currentSource = source
   setStatus("加载中", "pending")
@@ -315,6 +441,10 @@ async function loadCitySource(source: SourceKey) {
     cityLayer.remove(activeTileset)
     activeTileset = undefined
   }
+  if (activeModel) {
+    cityLayer.remove(activeModel)
+    activeModel = undefined
+  }
   localCityDataSource.show = false
 
   try {
@@ -323,6 +453,25 @@ async function loadCitySource(source: SourceKey) {
       setStatus("已加载", "ready")
       flyToEvent()
       setLog("[source=demo blocks] 本地演示城市已加载，无外部三维网址依赖；模型不代表真实上海建筑")
+      return
+    }
+
+    if (source === "lujiazui-glb") {
+      const model = await Cesium.Model.fromGltfAsync({
+        url: LUJIAZUI_GLB_URL,
+        scene: viewer.scene,
+        modelMatrix: createLujiazuiModelMatrix(),
+        shadows: Cesium.ShadowMode.ENABLED,
+        id: "lujiazui-camera-max-glb"
+      })
+      activeModel = model
+      cityLayer.add(model)
+      await waitForModelReady(model)
+      const hiddenNodes = cleanupLujiazuiModel(model)
+      applyLujiazuiLighting(model)
+      flyToLujiazui()
+      setStatus("已加载", "ready")
+      setLog(`[source=${SOURCE_LABELS[source]}] GLB 已加载；anchor=陆家嘴东岸；scale=${LUJIAZUI_LOCAL_BOUNDS.scale}；原始材质 + Cesium 光照/IBL/阴影/Bloom；AO 为兼容性关闭；cleanup=${hiddenNodes}`)
       return
     }
 
@@ -360,6 +509,10 @@ async function loadCitySource(source: SourceKey) {
     setStatus("已加载", "ready")
     setLog(`[source=${SOURCE_LABELS[source]}] ${source === "shanghai" ? "上海 3D Tiles" : source === "shanghai-local" ? "上海 AOI 本地缓存" : source === "shanghai-core" ? "上海核心模型" : "OSM Buildings"} 已加载；material=${MATERIAL_MODE_LABELS[currentMaterialMode]}`)
   } catch (error) {
+    if (source === "lujiazui-glb" && activeModel) {
+      cityLayer.remove(activeModel)
+      activeModel = undefined
+    }
     if (source === "shanghai") {
       currentSource = "local"
       sourceSelect.value = "local"
@@ -413,7 +566,7 @@ document.querySelector<HTMLButtonElement>("#reloadSource")!.addEventListener("cl
 materialSelect.addEventListener("change", () => {
   currentMaterialMode = materialSelect.value as MaterialMode
   if (!activeTileset) {
-    setLog(`[source=${SOURCE_LABELS[currentSource]}] material=${MATERIAL_MODE_LABELS[currentMaterialMode]}；当前 source 没有可着色 Tileset`)
+    setLog(`[source=${SOURCE_LABELS[currentSource]}] material=${MATERIAL_MODE_LABELS[currentMaterialMode]}；当前 GLB 保留原始材质或 source 没有可着色 Tileset`)
     return
   }
   applyMaterialMode()
